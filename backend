@@ -1,0 +1,909 @@
+import express, { Request, Response, NextFunction } from "express";
+import { registerRoutes } from "./routes";
+import { setupVite, serveStatic, log } from "./vite";
+
+async function main() {
+  const app = express();
+  
+  // Parse JSON body
+  app.use(express.json());
+  
+  // Setup routes
+  const server = await registerRoutes(app);
+  
+  // Setup Vite in development mode
+  const isDev = process.env.NODE_ENV === "development";
+  if (isDev) {
+    await setupVite(app, server);
+  } else {
+    serveStatic(app);
+  }
+  
+  // Error handler
+  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    console.error(err);
+    res.status(500).json({ message: "Internal server error" });
+  });
+  
+  // Start server
+  const port = process.env.PORT || 5000;
+  server.listen(port, () => {
+    log(`serving on port ${port}`);
+  });
+}
+
+main();
+
+
+import type { Express } from "express";
+import { createServer, type Server } from "http";
+import { storage } from "./storage";
+import express from "express";
+import { z } from "zod";
+import { 
+  insertUserSchema, 
+  insertPeriodLogSchema, 
+  insertDailyLogSchema, 
+  insertMentalHealthLogSchema 
+} from "@shared/schema";
+
+export async function registerRoutes(app: Express): Promise<Server> {
+  // API routes prefix
+  const apiRouter = express.Router();
+  app.use("/api", apiRouter);
+
+  // User routes
+  apiRouter.post("/users", async (req, res) => {
+    try {
+      const userData = insertUserSchema.parse(req.body);
+      const user = await storage.createUser(userData);
+      res.status(201).json(user);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ message: error.errors });
+      } else {
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  });
+
+  apiRouter.put("/users/:id", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const updates = insertUserSchema.partial().parse(req.body);
+      const updatedUser = await storage.updateUser(userId, updates);
+      
+      if (!updatedUser) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      
+      res.json(updatedUser);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ message: error.errors });
+      } else {
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  });
+
+  apiRouter.get("/users/:id", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const user = await storage.getUser(userId);
+      
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      
+      res.json(user);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Period log routes
+  apiRouter.get("/users/:userId/period-logs", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.userId);
+      
+      // Check if date range is provided
+      const { startDate, endDate } = req.query;
+      let logs;
+      
+      if (startDate && endDate) {
+        logs = await storage.getPeriodLogsByDateRange(
+          userId, 
+          new Date(startDate as string), 
+          new Date(endDate as string)
+        );
+      } else {
+        logs = await storage.getPeriodLogs(userId);
+      }
+      
+      res.json(logs);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  apiRouter.post("/period-logs", async (req, res) => {
+    try {
+      const logData = insertPeriodLogSchema.parse(req.body);
+      const log = await storage.createPeriodLog(logData);
+      res.status(201).json(log);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ message: error.errors });
+      } else {
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  });
+
+  apiRouter.put("/period-logs/:id", async (req, res) => {
+    try {
+      const logId = parseInt(req.params.id);
+      const updates = insertPeriodLogSchema.partial().parse(req.body);
+      const updatedLog = await storage.updatePeriodLog(logId, updates);
+      
+      if (!updatedLog) {
+        return res.status(404).json({ message: "Period log not found" });
+      }
+      
+      res.json(updatedLog);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ message: error.errors });
+      } else {
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  });
+
+  // Daily log routes
+  apiRouter.get("/users/:userId/daily-logs", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.userId);
+      
+      // Check if date range is provided
+      const { startDate, endDate, date } = req.query;
+      
+      if (date) {
+        const log = await storage.getDailyLogByDate(userId, new Date(date as string));
+        return res.json(log || null);
+      } else if (startDate && endDate) {
+        const logs = await storage.getDailyLogsByDateRange(
+          userId, 
+          new Date(startDate as string), 
+          new Date(endDate as string)
+        );
+        return res.json(logs);
+      } else {
+        const logs = await storage.getDailyLogs(userId);
+        return res.json(logs);
+      }
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  apiRouter.post("/daily-logs", async (req, res) => {
+    try {
+      const logData = insertDailyLogSchema.parse(req.body);
+      const log = await storage.createDailyLog(logData);
+      res.status(201).json(log);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ message: error.errors });
+      } else {
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  });
+
+  apiRouter.put("/daily-logs/:id", async (req, res) => {
+    try {
+      const logId = parseInt(req.params.id);
+      const updates = insertDailyLogSchema.partial().parse(req.body);
+      const updatedLog = await storage.updateDailyLog(logId, updates);
+      
+      if (!updatedLog) {
+        return res.status(404).json({ message: "Daily log not found" });
+      }
+      
+      res.json(updatedLog);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ message: error.errors });
+      } else {
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  });
+
+  // Mental health log routes
+  apiRouter.get("/users/:userId/mental-health-logs", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.userId);
+      
+      // Check if date is provided
+      const { date } = req.query;
+      
+      if (date) {
+        const log = await storage.getMentalHealthLogByDate(userId, new Date(date as string));
+        return res.json(log || null);
+      } else {
+        const logs = await storage.getMentalHealthLogs(userId);
+        return res.json(logs);
+      }
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  apiRouter.post("/mental-health-logs", async (req, res) => {
+    try {
+      const logData = insertMentalHealthLogSchema.parse(req.body);
+      const log = await storage.createMentalHealthLog(logData);
+      res.status(201).json(log);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ message: error.errors });
+      } else {
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  });
+
+  apiRouter.put("/mental-health-logs/:id", async (req, res) => {
+    try {
+      const logId = parseInt(req.params.id);
+      const updates = insertMentalHealthLogSchema.partial().parse(req.body);
+      const updatedLog = await storage.updateMentalHealthLog(logId, updates);
+      
+      if (!updatedLog) {
+        return res.status(404).json({ message: "Mental health log not found" });
+      }
+      
+      res.json(updatedLog);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ message: error.errors });
+      } else {
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  });
+
+  // Educational content routes
+  apiRouter.get("/educational-content", async (req, res) => {
+    try {
+      const { category } = req.query;
+      
+      if (category) {
+        const content = await storage.getEducationalContentByCategory(category as string);
+        return res.json(content);
+      } else {
+        const allContent = await storage.getAllEducationalContent();
+        return res.json(allContent);
+      }
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  apiRouter.get("/educational-content/:id", async (req, res) => {
+    try {
+      const contentId = parseInt(req.params.id);
+      const content = await storage.getEducationalContentById(contentId);
+      
+      if (!content) {
+        return res.status(404).json({ message: "Content not found" });
+      }
+      
+      res.json(content);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Motivational quotes routes
+  apiRouter.get("/motivational-quotes/random", async (req, res) => {
+    try {
+      const quote = await storage.getRandomMotivationalQuote();
+      
+      if (!quote) {
+        return res.status(404).json({ message: "No quotes available" });
+      }
+      
+      res.json(quote);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  apiRouter.get("/motivational-quotes", async (req, res) => {
+    try {
+      const quotes = await storage.getAllMotivationalQuotes();
+      res.json(quotes);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Google Fit data endpoint
+  apiRouter.get("/google-fit/activity", async (req, res) => {
+    try {
+      // This is mock data since we can't actually connect to Google Fit
+      const mockData = {
+        steps: 7456,
+        calories: 320,
+        distance: 5.2,
+        activeMinutes: 42,
+        lastUpdated: new Date().toISOString()
+      };
+      
+      res.json(mockData);
+    } catch (error) {
+      res.status(500).json({ message: "Error fetching Google Fit data" });
+    }
+  });
+
+  const httpServer = createServer(app);
+  return httpServer;
+}
+
+import {
+  User, InsertUser,
+  PeriodLog, InsertPeriodLog,
+  DailyLog, InsertDailyLog,
+  MentalHealthLog, InsertMentalHealthLog,
+  EducationalContent, InsertEducationalContent,
+  MotivationalQuote, InsertMotivationalQuote
+} from "@shared/schema";
+
+export interface IStorage {
+  // User operations
+  getUser(id: number): Promise<User | undefined>;
+  getUserByUsername(username: string): Promise<User | undefined>;
+  createUser(user: InsertUser): Promise<User>;
+  updateUser(id: number, updates: Partial<InsertUser>): Promise<User | undefined>;
+
+  // Period log operations
+  getPeriodLogs(userId: number): Promise<PeriodLog[]>;
+  getPeriodLogsByDateRange(userId: number, startDate: Date, endDate: Date): Promise<PeriodLog[]>;
+  createPeriodLog(log: InsertPeriodLog): Promise<PeriodLog>;
+  updatePeriodLog(id: number, updates: Partial<InsertPeriodLog>): Promise<PeriodLog | undefined>;
+
+  // Daily log operations
+  getDailyLogs(userId: number): Promise<DailyLog[]>;
+  getDailyLogsByDateRange(userId: number, startDate: Date, endDate: Date): Promise<DailyLog[]>;
+  getDailyLogByDate(userId: number, date: Date): Promise<DailyLog | undefined>;
+  createDailyLog(log: InsertDailyLog): Promise<DailyLog>;
+  updateDailyLog(id: number, updates: Partial<InsertDailyLog>): Promise<DailyLog | undefined>;
+
+  // Mental health log operations
+  getMentalHealthLogs(userId: number): Promise<MentalHealthLog[]>;
+  getMentalHealthLogByDate(userId: number, date: Date): Promise<MentalHealthLog | undefined>;
+  createMentalHealthLog(log: InsertMentalHealthLog): Promise<MentalHealthLog>;
+  updateMentalHealthLog(id: number, updates: Partial<InsertMentalHealthLog>): Promise<MentalHealthLog | undefined>;
+
+  // Educational content operations
+  getAllEducationalContent(): Promise<EducationalContent[]>;
+  getEducationalContentById(id: number): Promise<EducationalContent | undefined>;
+  getEducationalContentByCategory(category: string): Promise<EducationalContent[]>;
+  createEducationalContent(content: InsertEducationalContent): Promise<EducationalContent>;
+
+  // Motivational quotes operations
+  getRandomMotivationalQuote(): Promise<MotivationalQuote | undefined>;
+  getAllMotivationalQuotes(): Promise<MotivationalQuote[]>;
+  createMotivationalQuote(quote: InsertMotivationalQuote): Promise<MotivationalQuote>;
+}
+
+// In-memory storage implementation
+export class MemStorage implements IStorage {
+  private users: Map<number, User>;
+  private periodLogs: Map<number, PeriodLog>;
+  private dailyLogs: Map<number, DailyLog>;
+  private mentalHealthLogs: Map<number, MentalHealthLog>;
+  private educationalContents: Map<number, EducationalContent>;
+  private motivationalQuotes: Map<number, MotivationalQuote>;
+
+  private userId: number;
+  private periodLogId: number;
+  private dailyLogId: number;
+  private mentalHealthLogId: number;
+  private educationalContentId: number;
+  private motivationalQuoteId: number;
+
+  constructor() {
+    this.users = new Map();
+    this.periodLogs = new Map();
+    this.dailyLogs = new Map();
+    this.mentalHealthLogs = new Map();
+    this.educationalContents = new Map();
+    this.motivationalQuotes = new Map();
+
+    this.userId = 1;
+    this.periodLogId = 1;
+    this.dailyLogId = 1;
+    this.mentalHealthLogId = 1;
+    this.educationalContentId = 1;
+    this.motivationalQuoteId = 1;
+
+    // Initialize with some data
+    this.initializeEducationalContent();
+    this.initializeMotivationalQuotes();
+  }
+
+  // User operations
+  async getUser(id: number): Promise<User | undefined> {
+    return this.users.get(id);
+  }
+
+  async getUserByUsername(username: string): Promise<User | undefined> {
+    return Array.from(this.users.values()).find(user => user.username === username);
+  }
+
+  async createUser(insertUser: InsertUser): Promise<User> {
+    const id = this.userId++;
+    const user: User = { ...insertUser, id };
+    this.users.set(id, user);
+    return user;
+  }
+
+  async updateUser(id: number, updates: Partial<InsertUser>): Promise<User | undefined> {
+    const user = this.users.get(id);
+    if (!user) return undefined;
+
+    const updatedUser = { ...user, ...updates };
+    this.users.set(id, updatedUser);
+    return updatedUser;
+  }
+
+  // Period log operations
+  async getPeriodLogs(userId: number): Promise<PeriodLog[]> {
+    return Array.from(this.periodLogs.values())
+      .filter(log => log.userId === userId)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }
+
+  async getPeriodLogsByDateRange(userId: number, startDate: Date, endDate: Date): Promise<PeriodLog[]> {
+    return Array.from(this.periodLogs.values())
+      .filter(log => {
+        const logDate = new Date(log.date);
+        return log.userId === userId && 
+               logDate >= startDate && 
+               logDate <= endDate;
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }
+
+  async createPeriodLog(insertLog: InsertPeriodLog): Promise<PeriodLog> {
+    const id = this.periodLogId++;
+    const log: PeriodLog = { ...insertLog, id };
+    this.periodLogs.set(id, log);
+    return log;
+  }
+
+  async updatePeriodLog(id: number, updates: Partial<InsertPeriodLog>): Promise<PeriodLog | undefined> {
+    const log = this.periodLogs.get(id);
+    if (!log) return undefined;
+
+    const updatedLog = { ...log, ...updates };
+    this.periodLogs.set(id, updatedLog);
+    return updatedLog;
+  }
+
+  // Daily log operations
+  async getDailyLogs(userId: number): Promise<DailyLog[]> {
+    return Array.from(this.dailyLogs.values())
+      .filter(log => log.userId === userId)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }
+
+  async getDailyLogsByDateRange(userId: number, startDate: Date, endDate: Date): Promise<DailyLog[]> {
+    return Array.from(this.dailyLogs.values())
+      .filter(log => {
+        const logDate = new Date(log.date);
+        return log.userId === userId && 
+               logDate >= startDate && 
+               logDate <= endDate;
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }
+
+  async getDailyLogByDate(userId: number, date: Date): Promise<DailyLog | undefined> {
+    const dateString = date.toISOString().split('T')[0];
+    return Array.from(this.dailyLogs.values())
+      .find(log => {
+        return log.userId === userId && 
+               log.date.split('T')[0] === dateString;
+      });
+  }
+
+  async createDailyLog(insertLog: InsertDailyLog): Promise<DailyLog> {
+    const id = this.dailyLogId++;
+    const log: DailyLog = { ...insertLog, id };
+    this.dailyLogs.set(id, log);
+    return log;
+  }
+
+  async updateDailyLog(id: number, updates: Partial<InsertDailyLog>): Promise<DailyLog | undefined> {
+    const log = this.dailyLogs.get(id);
+    if (!log) return undefined;
+
+    const updatedLog = { ...log, ...updates };
+    this.dailyLogs.set(id, updatedLog);
+    return updatedLog;
+  }
+
+  // Mental health log operations
+  async getMentalHealthLogs(userId: number): Promise<MentalHealthLog[]> {
+    return Array.from(this.mentalHealthLogs.values())
+      .filter(log => log.userId === userId)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }
+
+  async getMentalHealthLogByDate(userId: number, date: Date): Promise<MentalHealthLog | undefined> {
+    const dateString = date.toISOString().split('T')[0];
+    return Array.from(this.mentalHealthLogs.values())
+      .find(log => {
+        return log.userId === userId && 
+               log.date.split('T')[0] === dateString;
+      });
+  }
+
+  async createMentalHealthLog(insertLog: InsertMentalHealthLog): Promise<MentalHealthLog> {
+    const id = this.mentalHealthLogId++;
+    const log: MentalHealthLog = { ...insertLog, id };
+    this.mentalHealthLogs.set(id, log);
+    return log;
+  }
+
+  async updateMentalHealthLog(id: number, updates: Partial<InsertMentalHealthLog>): Promise<MentalHealthLog | undefined> {
+    const log = this.mentalHealthLogs.get(id);
+    if (!log) return undefined;
+
+    const updatedLog = { ...log, ...updates };
+    this.mentalHealthLogs.set(id, updatedLog);
+    return updatedLog;
+  }
+
+  // Educational content operations
+  async getAllEducationalContent(): Promise<EducationalContent[]> {
+    return Array.from(this.educationalContents.values());
+  }
+
+  async getEducationalContentById(id: number): Promise<EducationalContent | undefined> {
+    return this.educationalContents.get(id);
+  }
+
+  async getEducationalContentByCategory(category: string): Promise<EducationalContent[]> {
+    return Array.from(this.educationalContents.values())
+      .filter(content => content.category.toLowerCase() === category.toLowerCase());
+  }
+
+  async createEducationalContent(insertContent: InsertEducationalContent): Promise<EducationalContent> {
+    const id = this.educationalContentId++;
+    const created = new Date().toISOString();
+    const content: EducationalContent = { ...insertContent, id, created };
+    this.educationalContents.set(id, content);
+    return content;
+  }
+
+  // Motivational quotes operations
+  async getRandomMotivationalQuote(): Promise<MotivationalQuote | undefined> {
+    const quotes = Array.from(this.motivationalQuotes.values());
+    if (quotes.length === 0) return undefined;
+    const randomIndex = Math.floor(Math.random() * quotes.length);
+    return quotes[randomIndex];
+  }
+
+  async getAllMotivationalQuotes(): Promise<MotivationalQuote[]> {
+    return Array.from(this.motivationalQuotes.values());
+  }
+
+  async createMotivationalQuote(insertQuote: InsertMotivationalQuote): Promise<MotivationalQuote> {
+    const id = this.motivationalQuoteId++;
+    const quote: MotivationalQuote = { ...insertQuote, id };
+    this.motivationalQuotes.set(id, quote);
+    return quote;
+  }
+
+  // Initialize sample educational content
+  private initializeEducationalContent() {
+    const contents = [
+      {
+        title: "Understanding PCOS Types",
+        description: "Learn about the four main types of PCOS and their distinct characteristics.",
+        contentType: "article",
+        category: "basics",
+        imageUrl: "/images/pcos-types.jpg",
+        tags: ["types", "diagnosis", "symptoms"],
+        created: new Date().toISOString()
+      },
+      {
+        title: "Insulin Resistance and PCOS",
+        description: "Discover the connection between insulin resistance and PCOS symptoms.",
+        contentType: "video",
+        category: "nutrition",
+        imageUrl: "/images/insulin-resistance.jpg",
+        videoUrl: "https://example.com/videos/insulin-resistance",
+        tags: ["insulin", "nutrition", "hormones"],
+        created: new Date().toISOString()
+      },
+      // More educational content can be added here
+    ];
+
+    contents.forEach(content => {
+      this.educationalContents.set(this.educationalContentId, {
+        ...content,
+        id: this.educationalContentId++
+      });
+    });
+  }
+
+  // Initialize sample motivational quotes
+  private initializeMotivationalQuotes() {
+    const quotes = [
+      {
+        quote: "Your health is an investment, not an expense.",
+        author: "Unknown",
+        category: "health"
+      },
+      {
+        quote: "The greatest wealth is health.",
+        author: "Virgil",
+        category: "health"
+      },
+      {
+        quote: "Take care of your body. It's the only place you have to live.",
+        author: "Jim Rohn",
+        category: "self-care"
+      },
+      // More quotes can be added here
+    ];
+
+    quotes.forEach(quote => {
+      this.motivationalQuotes.set(this.motivationalQuoteId, {
+        ...quote,
+        id: this.motivationalQuoteId++
+      });
+    });
+  }
+}
+
+// Create and export the storage instance
+export const storage = new MemStorage();
+
+import type { Express } from "express";
+import type { Server } from "http";
+import { createServer as createViteServer } from "vite";
+import path from "path";
+import fs from "fs";
+
+export function log(message: string, source = "express") {
+  const time = new Date().toLocaleTimeString();
+  console.log(`${time} [${source}] ${message}`);
+}
+
+export async function setupVite(app: Express, server: Server) {
+  const vite = await createViteServer({
+    server: {
+      middlewareMode: true,
+    },
+    appType: "spa",
+  });
+
+  app.use(vite.middlewares);
+
+  app.get("*", async (req, res, next) => {
+    const url = req.originalUrl;
+    
+    try {
+      // If the request is for an API route, skip and let Express handle it
+      if (url.startsWith("/api")) {
+        return next();
+      }
+
+      // Otherwise, serve the index.html file
+      let template = fs.readFileSync(
+        path.resolve("client/index.html"),
+        "utf-8"
+      );
+      
+      template = await vite.transformIndexHtml(url, template);
+      res.status(200).set({ "Content-Type": "text/html" }).end(template);
+    } catch (e) {
+      vite.ssrFixStacktrace(e as Error);
+      next(e);
+    }
+  });
+
+  return server;
+}
+
+export function serveStatic(app: Express) {
+  const distPath = path.resolve("dist/client");
+  app.use(express.static(distPath));
+
+  app.get("*", (req, res, next) => {
+    const url = req.originalUrl;
+    
+    // If the request is for an API route, skip and let Express handle it
+    if (url.startsWith("/api")) {
+      return next();
+    }
+
+    // Otherwise, serve the index.html file
+    res.sendFile(path.join(distPath, "index.html"));
+  });
+}
+
+import { pgTable, serial, text, date, integer, boolean, timestamp, jsonb } from 'drizzle-orm/pg-core';
+import { createInsertSchema } from 'drizzle-zod';
+import { z } from 'zod';
+
+// User schema
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  username: text("username").notNull().unique(),
+  email: text("email").notNull().unique(),
+  password: text("password").notNull(),
+  firstName: text("first_name"),
+  lastName: text("last_name"),
+  dateOfBirth: date("date_of_birth"),
+  height: integer("height"), // in cm
+  weight: integer("weight"), // in kg
+  pcosDiagnosed: boolean("pcos_diagnosed").default(false),
+  pcosType: text("pcos_type"), // insulin-resistant, inflammatory, etc.
+  language: text("language").default("en"),
+  darkMode: boolean("dark_mode").default(false),
+  googleFitConnected: boolean("google_fit_connected").default(false)
+});
+
+export const insertUserSchema = createInsertSchema(users).pick({
+  username: true,
+  email: true,
+  password: true,
+  firstName: true,
+  lastName: true,
+  dateOfBirth: true,
+  height: true,
+  weight: true,
+  pcosDiagnosed: true,
+  pcosType: true,
+  language: true,
+  darkMode: true,
+  googleFitConnected: true
+});
+
+// Period log schema
+export const periodLog = pgTable("period_log", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  date: text("date").notNull(), // YYYY-MM-DD format
+  periodStarted: boolean("period_started").default(false),
+  flow: text("flow"), // light, medium, heavy
+  symptoms: text("symptoms").array(), // Array of symptoms
+  notes: text("notes")
+});
+
+export const insertPeriodLogSchema = createInsertSchema(periodLog).pick({
+  userId: true,
+  date: true,
+  periodStarted: true,
+  flow: true,
+  symptoms: true,
+  notes: true
+});
+
+// Daily log schema
+export const dailyLog = pgTable("daily_log", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  date: text("date").notNull(), // YYYY-MM-DD format
+  mood: text("mood"), // happy, sad, neutral, etc.
+  energy: integer("energy"), // 1-10 scale
+  sleep: integer("sleep"), // hours of sleep
+  exercise: boolean("exercise").default(false),
+  exerciseType: text("exercise_type"),
+  exerciseDuration: integer("exercise_duration"), // in minutes
+  diet: jsonb("diet"), // can store complex food intake data
+  supplements: text("supplements").array(), // Array of supplements taken
+  symptoms: text("symptoms").array(), // Array of symptoms
+  notes: text("notes")
+});
+
+export const insertDailyLogSchema = createInsertSchema(dailyLog).pick({
+  userId: true,
+  date: true,
+  mood: true,
+  energy: true,
+  sleep: true,
+  exercise: true,
+  exerciseType: true,
+  exerciseDuration: true,
+  diet: true,
+  supplements: true,
+  symptoms: true,
+  notes: true
+});
+
+// Mental health log schema
+export const mentalHealthLog = pgTable("mental_health_log", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  date: text("date").notNull(), // YYYY-MM-DD format
+  stressLevel: integer("stress_level"), // 1-10 scale
+  anxietyLevel: integer("anxiety_level"), // 1-10 scale
+  moodRating: integer("mood_rating"), // 1-10 scale
+  sleepQuality: integer("sleep_quality"), // 1-10 scale
+  journal: text("journal"), // Text entry for journaling
+  gratitudeList: text("gratitude_list").array() // Array of things to be grateful for
+});
+
+export const insertMentalHealthLogSchema = createInsertSchema(mentalHealthLog).pick({
+  userId: true,
+  date: true,
+  stressLevel: true,
+  anxietyLevel: true,
+  moodRating: true,
+  sleepQuality: true,
+  journal: true,
+  gratitudeList: true
+});
+
+// Educational content schema
+export const educationalContent = pgTable("educational_content", {
+  id: serial("id").primaryKey(),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  contentType: text("content_type").notNull(), // article, video, infographic
+  category: text("category").notNull(), // basics, nutrition, lifestyle, etc.
+  imageUrl: text("image_url").notNull(),
+  videoUrl: text("video_url"),
+  created: timestamp("created").notNull(),
+  tags: text("tags").array() // Array of tags for searchability
+});
+
+export const insertEducationalContentSchema = createInsertSchema(educationalContent).omit({
+  id: true,
+  created: true
+});
+
+// Motivational quotes schema
+export const motivationalQuotes = pgTable("motivational_quotes", {
+  id: serial("id").primaryKey(),
+  quote: text("quote").notNull(),
+  author: text("author").notNull(),
+  category: text("category").notNull() // health, self-care, motivation, etc.
+});
+
+export const insertMotivationalQuoteSchema = createInsertSchema(motivationalQuotes).pick({
+  quote: true,
+  author: true,
+  category: true
+});
+
+// Type exports
+export type User = typeof users.$inferSelect;
+export type InsertUser = z.infer<typeof insertUserSchema>;
+
+export type PeriodLog = typeof periodLog.$inferSelect;
+export type InsertPeriodLog = z.infer<typeof insertPeriodLogSchema>;
+
+export type DailyLog = typeof dailyLog.$inferSelect;
+export type InsertDailyLog = z.infer<typeof insertDailyLogSchema>;
+
+export type MentalHealthLog = typeof mentalHealthLog.$inferSelect;
+export type InsertMentalHealthLog = z.infer<typeof insertMentalHealthLogSchema>;
+
+export type EducationalContent = typeof educationalContent.$inferSelect;
+export type InsertEducationalContent = z.infer<typeof insertEducationalContentSchema>;
+
+export type MotivationalQuote = typeof motivationalQuotes.$inferSelect;
+export type InsertMotivationalQuote = z.infer<typeof insertMotivationalQuoteSchema>;
+
