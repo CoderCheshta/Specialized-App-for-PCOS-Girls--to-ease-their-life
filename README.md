@@ -1,6 +1,5 @@
-PCOS Care Companion – A Personalized App for Holistic PCOS Management**
 
- Project Title: PCOS Care Companion – A Personalized App for Holistic PCOS Management
+ Project Title: CuraPCOS – A Personalized App for Holistic PCOS Management
 
  Main Features:
 
